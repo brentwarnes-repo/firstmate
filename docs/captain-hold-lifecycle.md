@@ -13,6 +13,9 @@ It never reads report bodies, review artifacts, terminal output, or chat.
 The `hold` subcommand is the mandatory captain-hold creation path: it uses an existing task or creates one when nothing exists to hold, records its UTC hold-set timestamp as the leading line of the task body, then invokes the underlying tasks-axi hold operation and verifies both records.
 Publishing the stamp first ensures a snapshot cannot observe a newly captain-held task without the timestamp that defines its age.
 Retries of an active hold preserve its hold-set timestamp, while re-holding released work starts a new timestamped lifecycle; a closed task is refused rather than reopened, and `--until` stores the captain's own deferral date through tasks-axi's date gate.
+`hold --park` records a parked or standby item through tasks-axi `--kind parked` rather than `--kind captain`, so it is state rather than a live captain call.
+An optional `--until` on that park is a date gate on the work, not a deferred live ask.
+A parked hold does not receive a hold-set stamp or a parent `needs-decision` event.
 
 The `answer` subcommand records the captain's exact words and resolves the call in the same act: it closes a question-shaped call, while `answer --release` frees a captain-gated work item to proceed without completing it.
 It requires a non-empty captain decision file of at most 8192 bytes, durably writes a resolution block carrying the decision digest and a `Resolution mode:` while retaining the leading hold-set stamp until the selected `tasks-axi done` or `tasks-axi unhold` transition succeeds, then restores the successful record's resolution-first body ordering (the previous body remains preserved below the block and archived through tasks-axi `--archive-body`).
@@ -126,6 +129,7 @@ It then assigns every captain hold exactly one `hold_bucket`, decided only from 
 Hold reason and body prose are never matched, so no wording can hide, reveal, or reclassify a decision.
 The buckets are total and mutually exclusive: `blocked` when any blocker is unresolved, else `dated` while `hold_until` is in the future, else `aged` when an undated hold's hold-set timestamp is at least `FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS` old (default 14, floored elapsed days), else `live`.
 No captain hold can fall through them and none can match two, which is what keeps a hold from vanishing from every view.
+A `parked` hold kind, including standby items recorded that way, carries no `hold_bucket` and is not `captain_actionable`.
 `captain_actionable` - waiting on the captain now - is exactly `hold_bucket == "live"`.
 Existing undated holds without a hold-set stamp fall back to the task's `since` date.
 That aging is a projection safety net only.
