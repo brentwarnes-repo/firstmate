@@ -6,9 +6,11 @@
 # ChatGPT. Do not write routine status updates or every internal message.
 # The destination is transient transport, not canonical storage.
 #
-# A secondmate home always refuses. An FM_CHATGPT_RETURN_PATH that differs
-# from the live default is required when FM_TASK_ID is set, so a crewmate
-# cannot write the live transport as if it were the primary.
+# A secondmate home always refuses. An FM_CHATGPT_RETURN_PATH that resolves
+# to a different canonical path than the live default is required when
+# FM_TASK_ID is set, so a crewmate cannot write the live transport as if it
+# were the primary (including via a symlink, "." segment, or relative spelling
+# of the same file).
 #
 # write assembles the return, verifies that enumerated PR counts agree with
 # listed items, then atomically replaces the destination.
@@ -185,6 +187,36 @@ verify_file() {  # <path>
   [ "$disagreements" -eq 0 ] || return 1
 }
 
+# Resolve a path to its canonical absolute form, tolerating missing trailing
+# components (like GNU `realpath -m`): symlinks and "." / ".." segments are
+# resolved component-by-component against the already-resolved prefix, so a
+# symlink, "./" spelling, or "../" spelling of an existing live file still
+# canonicalizes to that file's real path even when the leaf itself is absent.
+canonical_path() {  # <path> -> resolved absolute path
+  perl -e '
+    my $path = $ARGV[0];
+    $path = "$ENV{PWD}/$path" unless $path =~ m{^/};
+    my @parts = split m{/+}, $path;
+    my $resolved = "";
+    for my $part (@parts) {
+      next if $part eq "" || $part eq ".";
+      if ($part eq "..") {
+        $resolved =~ s{/[^/]*$}{} if $resolved ne "";
+        next;
+      }
+      my $candidate = "$resolved/$part";
+      if (-e $candidate || -l $candidate) {
+        require Cwd;
+        my $rp = Cwd::realpath($candidate);
+        $resolved = defined $rp ? $rp : $candidate;
+      } else {
+        $resolved = $candidate;
+      }
+    }
+    print(($resolved eq "" ? "/" : $resolved), "\n");
+  ' "$1" 2>/dev/null
+}
+
 atomic_replace() {  # <dest> <content-file>
   local dest=$1 src=$2 dir tmp
   dir=$(dirname "$dest")
@@ -233,6 +265,7 @@ command_verify() {
 command_write() {
   local status='' return_file='' task='' clear_safe=yes dest now tmp
   local artifacts='' blockers='' item art_block blk_block
+  local dest_canonical default_canonical
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --status) shift; status=${1:-} ;;
@@ -270,8 +303,12 @@ command_write() {
     fail "secondmate homes must not write the ChatGPT return transport"
   fi
   dest=${FM_CHATGPT_RETURN_PATH:-$DEFAULT_RETURN_PATH}
-  if [ -n "${FM_TASK_ID:-}" ] && [ "$dest" = "$DEFAULT_RETURN_PATH" ]; then
-    fail "a task worker must not write the live ChatGPT return transport"
+  if [ -n "${FM_TASK_ID:-}" ]; then
+    dest_canonical=$(canonical_path "$dest") || dest_canonical=$dest
+    default_canonical=$(canonical_path "$DEFAULT_RETURN_PATH") || default_canonical=$DEFAULT_RETURN_PATH
+    if [ "$dest_canonical" = "$default_canonical" ]; then
+      fail "a task worker must not write the live ChatGPT return transport"
+    fi
   fi
   now=${FM_CHATGPT_RETURN_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
   case "$now" in

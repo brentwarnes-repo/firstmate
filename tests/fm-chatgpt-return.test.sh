@@ -102,6 +102,32 @@ test_crewmate_explicit_live_path_refuses() {
   pass "a task worker cannot bypass the guard by passing the live path explicitly"
 }
 
+test_crewmate_equivalent_path_spellings_refuse() {
+  local home live_default symlink_path variant
+  home=$(make_home crew-variant)
+  live_default="$HOME/inbox/FIRST_MATE_TO_CHATGPT.md"
+  symlink_path="$TMP_ROOT/crew-variant-symlink.md"
+  ln -s "$live_default" "$symlink_path"
+  for variant in \
+    "$HOME/inbox/./FIRST_MATE_TO_CHATGPT.md" \
+    "$HOME//inbox/FIRST_MATE_TO_CHATGPT.md" \
+    "$HOME/inbox/../inbox/FIRST_MATE_TO_CHATGPT.md" \
+    "$symlink_path"; do
+    printf 'Should not land.\n' > "$TMP_ROOT/crew-variant-body.md"
+    if FM_HOME="$home" FM_TASK_ID=followon-decision-filter \
+      FM_CHATGPT_RETURN_PATH="$variant" \
+      FM_CHATGPT_RETURN_NOW="$NOW" \
+      "$RETURN" write --status complete \
+      --return-file "$TMP_ROOT/crew-variant-body.md" \
+      > "$TMP_ROOT/crew-variant.out" 2> "$TMP_ROOT/crew-variant.err"; then
+      fail "a task worker wrote the live path via the spelling: $variant"
+    fi
+    assert_grep "must not write the live ChatGPT return" "$TMP_ROOT/crew-variant.err" \
+      "equivalent-path refusal did not name the boundary for: $variant"
+  done
+  pass "a task worker cannot bypass the guard via an equivalent path spelling"
+}
+
 test_verify_agrees_inline_and_rejects_four_vs_three() {
   local ok bad
   ok=$TMP_ROOT/ok.md
@@ -156,4 +182,5 @@ test_write_assembles_and_replaces
 test_secondmate_refuses
 test_crewmate_live_path_refuses
 test_crewmate_explicit_live_path_refuses
+test_crewmate_equivalent_path_spellings_refuse
 test_write_refuses_disagreeing_body
