@@ -6,9 +6,9 @@
 # ChatGPT. Do not write routine status updates or every internal message.
 # The destination is transient transport, not canonical storage.
 #
-# A secondmate home always refuses. An explicit FM_CHATGPT_RETURN_PATH is
-# required when FM_TASK_ID is set, so a crewmate cannot write the live
-# transport as if it were the primary.
+# A secondmate home always refuses. An FM_CHATGPT_RETURN_PATH that differs
+# from the live default is required when FM_TASK_ID is set, so a crewmate
+# cannot write the live transport as if it were the primary.
 #
 # write assembles the return, verifies that enumerated PR counts agree with
 # listed items, then atomically replaces the destination.
@@ -270,7 +270,7 @@ command_write() {
     fail "secondmate homes must not write the ChatGPT return transport"
   fi
   dest=${FM_CHATGPT_RETURN_PATH:-$DEFAULT_RETURN_PATH}
-  if [ -n "${FM_TASK_ID:-}" ] && [ -z "${FM_CHATGPT_RETURN_PATH:-}" ]; then
+  if [ -n "${FM_TASK_ID:-}" ] && [ "$dest" = "$DEFAULT_RETURN_PATH" ]; then
     fail "a task worker must not write the live ChatGPT return transport"
   fi
   now=${FM_CHATGPT_RETURN_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}

@@ -85,6 +85,23 @@ test_crewmate_live_path_refuses() {
   pass "a task worker cannot write the live ChatGPT return"
 }
 
+test_crewmate_explicit_live_path_refuses() {
+  local home
+  home=$(make_home crew-explicit)
+  printf 'Should not land.\n' > "$TMP_ROOT/crew-explicit-body.md"
+  if FM_HOME="$home" FM_TASK_ID=followon-decision-filter \
+    FM_CHATGPT_RETURN_PATH="$HOME/inbox/FIRST_MATE_TO_CHATGPT.md" \
+    FM_CHATGPT_RETURN_NOW="$NOW" \
+    "$RETURN" write --status complete \
+    --return-file "$TMP_ROOT/crew-explicit-body.md" \
+    > "$TMP_ROOT/crew-explicit.out" 2> "$TMP_ROOT/crew-explicit.err"; then
+    fail "a task worker wrote the live path by passing it explicitly"
+  fi
+  assert_grep "must not write the live ChatGPT return" "$TMP_ROOT/crew-explicit.err" \
+    "explicit-live-path refusal did not name the boundary"
+  pass "a task worker cannot bypass the guard by passing the live path explicitly"
+}
+
 test_verify_agrees_inline_and_rejects_four_vs_three() {
   local ok bad
   ok=$TMP_ROOT/ok.md
@@ -138,4 +155,5 @@ test_verify_agrees_inline_and_rejects_four_vs_three
 test_write_assembles_and_replaces
 test_secondmate_refuses
 test_crewmate_live_path_refuses
+test_crewmate_explicit_live_path_refuses
 test_write_refuses_disagreeing_body
