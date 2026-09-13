@@ -1,0 +1,25 @@
+$ fm-chatgpt-return.sh write --status complete --return-file body.md --task overnight-local-control-repair --artifact bin/fm-chatgpt-return.sh --blocker "none - all three controls independently tested"
+/tmp/tmp.i05WpwA9pW/inbox/FIRST_MATE_TO_CHATGPT.md
+
+--- resulting ~/inbox/FIRST_MATE_TO_CHATGPT.md ---
+# First Mate → ChatGPT return
+
+Generated: 2026-09-13T00:00:00Z
+Originating task/packet: overnight-local-control-repair
+Result/status: complete
+
+## Concise return
+
+The overnight local control repair is complete: ChatGPT return transport, DO IT/DECIDE/REVIEW filter, and packet-scoped merge authority are all locally implemented and independently tested. PR #4315 remains parked and untouched.
+
+## Referenced artifacts
+
+- bin/fm-chatgpt-return.sh
+
+## Blockers and genuine decisions
+
+- none - all three controls independently tested
+
+## Clear safety
+
+CLEAR_SAFE: YES
