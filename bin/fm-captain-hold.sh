@@ -830,6 +830,7 @@ verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how>"
 command_hold() {
   local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence
   local existing_hold_kind='' existing_held='' preserve_hold_set=0 park=0 hold_kind_flag=captain
+  local park_pending_marker=''
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -928,9 +929,22 @@ command_hold() {
     # re-surfaced), which is the defect diagnosed in the parked upstream
     # branch. occurrence is recomputed from the body read BEFORE this park
     # took effect, so it names the exact occurrence that was left open.
-    if [ "$existing_hold_kind" = captain ] && [ "$existing_held" = yes ]; then
+    #
+    # A first attempt's transition from captain to parked already lands
+    # durably in the backlog even when the parent-channel write itself fails
+    # (a broken route, an unreachable parent home): existing_hold_kind then
+    # reads "parked" on any later retry, and re-holding without this durable
+    # marker would silently drop the still-owed resolution forever. The
+    # marker is written before the publish attempt and removed only once
+    # publish_parent_hold confirms delivery (or confirms this is a main home
+    # with nothing to publish), so a retry keeps trying until it lands.
+    park_pending_marker="$STATE/$id.park-pending-resolve"
+    if { [ "$existing_hold_kind" = captain ] && [ "$existing_held" = yes ]; } \
+      || [ -e "$park_pending_marker" ]; then
+      : > "$park_pending_marker"
       occurrence=$(( $(resolution_record_count "$(show_field "$show" body)") + 1 ))
       publish_parent_hold "$id" "$occurrence" resolved parked
+      [ "$PARENT_HOLD_PUBLISHED" = 1 ] && rm -f -- "$park_pending_marker"
     fi
   else
     occurrence=$(( $(resolution_record_count "$(show_field "$show" body)") + 1 ))

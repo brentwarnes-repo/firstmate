@@ -6,14 +6,21 @@
 # ChatGPT. Do not write routine status updates or every internal message.
 # The destination is transient transport, not canonical storage.
 #
-# A secondmate home always refuses. An FM_CHATGPT_RETURN_PATH that canonicalizes
-# (via `realpath -m`, which resolves through symlinks - including a dangling
-# one - the same way whether or not the leaf exists yet) to the live default's
-# own canonical path is required to differ when FM_TASK_ID is set, so a
-# crewmate cannot write the live transport as if it were the primary, including
-# via a symlink, a "." or ".." segment, or a relative spelling of the same
-# file. The write itself always targets the canonicalized destination, so the
-# guard check and the actual write path can never diverge.
+# A secondmate home always refuses. Writing to the live default path is also
+# refused whenever FM_TASK_ID is set OR the script's own root is not a genuine
+# primary checkout (fm-primary-scope-lib.sh's fm_primary_scope_matches: a
+# linked task worktree fails this the same way a spawned task's isolated
+# checkout always does, per AGENTS.md's worktree-isolation contract), so an
+# environment-clearing wrapper that merely unsets FM_TASK_ID cannot make a
+# task worker pass as the primary - worktree identity is not caller-supplied.
+# An FM_CHATGPT_RETURN_PATH that canonicalizes (via `realpath -m`, which
+# resolves through symlinks - including a dangling one - the same way whether
+# or not the leaf exists yet) to the live default's own canonical path is
+# required to differ under either of those conditions, so a crewmate cannot
+# write the live transport as if it were the primary, including via a
+# symlink, a "." or ".." segment, or a relative spelling of the same file.
+# The write itself always targets the canonicalized destination, so the guard
+# check and the actual write path can never diverge.
 #
 # write assembles the return, verifies that enumerated PR counts agree with
 # listed items, then atomically replaces the destination.
@@ -23,7 +30,10 @@
 # repo (a full .../OWNER/REPO/pull/N URL or an OWNER/REPO#N shorthand), so two
 # different repos' PR #6 are counted as two items rather than deduplicated into
 # one; a bare "PR #N" or "#N" with no repo qualifier falls into one shared
-# unqualified bucket per number, matching prior single-repo behavior.
+# unqualified bucket per number, matching prior single-repo behavior. When a
+# claim's list carries no numbered PR identity at all (title-only bullets),
+# the QA falls back to counting the list's own top-level bullets against the
+# claimed count instead of accepting the claim on no evidence.
 #
 # Usage:
 #   fm-chatgpt-return.sh write --status <text> --return-file <path> \
@@ -36,12 +46,14 @@
 #   FM_CHATGPT_RETURN_PATH     destination override (tests). Default:
 #                              $HOME/inbox/FIRST_MATE_TO_CHATGPT.md
 #   FM_CHATGPT_RETURN_NOW      UTC timestamp override YYYY-MM-DDTHH:MM:SSZ
-#   FM_TASK_ID                 when set, the default live path is refused
+#   FM_TASK_ID                 when set, the default live path is refused; a
+#                              linked task worktree is refused regardless
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DEFAULT_RETURN_PATH="${HOME}/inbox/FIRST_MATE_TO_CHATGPT.md"
 
 # shellcheck source=bin/fm-primary-scope-lib.sh
@@ -140,9 +152,26 @@ claim_count_from_line() {  # <line> -> count or empty
 }
 
 chatgpt_return_check_claim() {  # <claimed-count> <buffer>
-  local claimed=$1 buf=$2 ids id_count
+  local claimed=$1 buf=$2 ids id_count list_count
   ids=$(collect_pr_ids "$buf" || true)
   if [ -z "$ids" ]; then
+    # No numbered PR identity was found anywhere in the claim's own buffer
+    # (e.g. title-only bullets: "Three PRs landed:" followed by two bullets
+    # naming no PR number). Fall back to counting the buffer's own top-level
+    # list bullets - unindented lines starting with "-", the same shape
+    # verify_file's own fold already collects into this buffer - rather than
+    # accepting the claim on no evidence at all. A claim with neither IDs nor
+    # a list to count against it (a bare inline sentence) stays permissive,
+    # since there is nothing here to compare it to.
+    list_count=$(printf '%s\n' "$buf" | grep -c '^-' || true)
+    if [ "$list_count" -eq 0 ]; then
+      return 0
+    fi
+    if [ "$list_count" -ne "$claimed" ]; then
+      printf 'fm-chatgpt-return: claimed %s PRs but listed %s items\n' \
+        "$claimed" "$list_count" >&2
+      return 1
+    fi
     return 0
   fi
   id_count=$(printf '%s\n' "$ids" | grep -c . || true)
@@ -317,10 +346,16 @@ command_write() {
   fi
   dest=$(canonical_path "${FM_CHATGPT_RETURN_PATH:-$DEFAULT_RETURN_PATH}") \
     || fail "could not canonicalize the destination path"
-  if [ -n "${FM_TASK_ID:-}" ]; then
-    default_canonical=$(canonical_path "$DEFAULT_RETURN_PATH") \
-      || fail "could not canonicalize the live return path"
-    if [ "$dest" = "$default_canonical" ]; then
+  default_canonical=$(canonical_path "$DEFAULT_RETURN_PATH") \
+    || fail "could not canonicalize the live return path"
+  if [ "$dest" = "$default_canonical" ]; then
+    # FM_TASK_ID is an optional, caller-controlled signal: an
+    # environment-clearing wrapper can unset it without ceasing to be a task
+    # worker. fm_primary_scope_matches reads a fact FM_TASK_ID cannot spoof
+    # away - whether this script's own root is a genuine primary checkout
+    # (git_dir == git_common_dir) rather than a spawned task's linked
+    # worktree - so either signal alone is enough to refuse.
+    if [ -n "${FM_TASK_ID:-}" ] || ! fm_primary_scope_matches "$FM_ROOT" "$STATE"; then
       fail "a task worker must not write the live ChatGPT return transport"
     fi
   fi

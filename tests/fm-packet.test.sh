@@ -119,8 +119,56 @@ test_grant_refuses_on_closed_packet() {
   pass "grant refuses a closed packet"
 }
 
+# Concurrency regression (codex review finding on PR #4344): a grant and a
+# close racing the same packet's read-modify-write must serialize, so a grant
+# that started before a close cannot finish after it and resurrect merge
+# authority on a now-closed packet. FM_PACKET_TEST_DELAY holds the lock across
+# a deliberate pause in close's own critical section, and this test starts
+# grant while that pause is in flight - it must block until close's lock
+# releases, then correctly refuse against the now-closed record instead of
+# racing it. Before the fm-wake-lib.sh per-slug lock, close would write last
+# because the delay was inserted after read but before write, and grant would
+# already have finished (reading the old open record) while close slept -
+# writing merge_authority=yes and status=open moments before close's own write
+# landed, so the final record briefly and then durably showed a granted,
+# supposedly-open packet with a cleared close timestamp.
+test_concurrent_grant_and_close_serialize() {
+  local home slug=race grant_out grant_err
+  home=$(make_home concurrency)
+  run_packet "$home" open "$slug" --repo owner/repo --objective "race check" >/dev/null \
+    || fail "open failed"
+  run_packet "$home" grant "$slug" >/dev/null || fail "initial grant failed"
+
+  ( FM_HOME="$home" FM_PACKET_NOW="$NOW" FM_PACKET_TEST_DELAY=2 \
+      "$PACKET" close "$slug" >"$TMP_ROOT/race-close.out" 2>"$TMP_ROOT/race-close.err" ) &
+  local close_pid=$!
+  # Give close time to acquire the lock and enter its delay before grant
+  # attempts to acquire the same lock.
+  sleep 0.5
+  grant_out=$TMP_ROOT/race-grant.out
+  grant_err=$TMP_ROOT/race-grant.err
+  run_packet "$home" grant "$slug" > "$grant_out" 2> "$grant_err"
+  local grant_rc=$?
+  wait "$close_pid" || fail "close failed"
+
+  [ "$grant_rc" -ne 0 ] || fail "a grant that raced a concurrent close was not blocked and incorrectly succeeded"
+  assert_grep "is not open" "$grant_err" \
+    "grant did not correctly see the packet as closed after waiting out the lock"
+
+  local status closed authority
+  status=$(run_packet "$home" show "$slug" | sed -n 's/^status=//p')
+  closed=$(run_packet "$home" show "$slug" | sed -n 's/^closed=//p')
+  authority=$(run_packet "$home" show "$slug" | sed -n 's/^merge_authority=//p')
+  assert_equals closed "$status" "the race left the packet's status reverted to open"
+  assert_not_equals "" "$closed" "the race cleared the packet's close timestamp"
+  assert_equals yes "$authority" \
+    "closing must not itself revoke a real prior grant, only expire it via status=closed"
+  pass "a grant racing a concurrent close serializes on the packet lock instead of corrupting the record"
+}
+
 test_check_before_open_refuses
 test_full_lifecycle
 test_open_refuses_duplicate
 test_close_refuses_twice
 test_grant_refuses_on_closed_packet
+test_concurrent_grant_and_close_serialize

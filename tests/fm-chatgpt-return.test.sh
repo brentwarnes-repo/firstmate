@@ -195,6 +195,63 @@ test_crewmate_dangling_symlink_to_live_path_refuses() {
   pass "a task worker cannot bypass the guard via a dangling symlink to the live path"
 }
 
+# Diagnosed defect #3 (FM_TASK_ID trust gap): FM_TASK_ID is an optional,
+# caller-controlled environment variable, so a task worker invoked through an
+# environment-clearing wrapper (or one that simply forgets to set it) could
+# previously write the live default path unchallenged. The fix adds a second,
+# non-caller-controlled signal: the script's own root must be a genuine
+# primary checkout (fm_primary_scope_matches), not a linked task worktree -
+# exactly the topology every real spawned task runs in. This builds a real
+# git worktree fixture (matching production: a bare origin, a primary
+# checkout, and a linked worktree sharing its git dir) to prove the refusal
+# fires from worktree identity alone, with FM_TASK_ID deliberately unset.
+test_worktree_root_refuses_live_path_even_without_task_id() {
+  local repo worktree fake_home
+  repo=$TMP_ROOT/worktree-fixture-repo
+  worktree=$TMP_ROOT/worktree-fixture-worktree
+  fake_home=$TMP_ROOT/worktree-fixture-fake-home
+  mkdir -p "$fake_home"
+  fm_git_worktree "$repo" "$worktree" task-branch
+  mkdir -p "$worktree/bin" "$worktree/state"
+  printf '# Worktree fixture\n' > "$worktree/AGENTS.md"
+  printf 'Should not land.\n' > "$TMP_ROOT/worktree-fixture-body.md"
+  if env -u FM_TASK_ID HOME="$fake_home" FM_HOME="$worktree" FM_ROOT_OVERRIDE="$worktree" \
+    FM_STATE_OVERRIDE="$worktree/state" FM_CHATGPT_RETURN_NOW="$NOW" \
+    "$RETURN" write --status complete \
+    --return-file "$TMP_ROOT/worktree-fixture-body.md" \
+    > "$TMP_ROOT/worktree-fixture.out" 2> "$TMP_ROOT/worktree-fixture.err"; then
+    fail "a linked-worktree root wrote the live ChatGPT return with FM_TASK_ID unset"
+  fi
+  assert_grep "must not write the live ChatGPT return" "$TMP_ROOT/worktree-fixture.err" \
+    "worktree-identity refusal did not name the boundary"
+  assert_absent "$fake_home/inbox/FIRST_MATE_TO_CHATGPT.md" \
+    "the worktree bypass actually created the live file"
+  pass "a linked task worktree is refused from the live path even with FM_TASK_ID unset"
+}
+
+# The positive counterpart: a genuine non-worktree primary checkout, with
+# FM_TASK_ID unset, is still allowed to write its own live default path -
+# fm_primary_scope_matches must not turn into a blanket refusal.
+test_genuine_primary_root_may_write_live_path() {
+  local primary dest
+  primary=$TMP_ROOT/primary-fixture-repo
+  fm_git_init_commit "$primary"
+  mkdir -p "$primary/bin" "$primary/state"
+  printf '# Primary fixture\n' > "$primary/AGENTS.md"
+  dest="$primary/inbox/FIRST_MATE_TO_CHATGPT.md"
+  printf 'Real primary return.\n' > "$TMP_ROOT/primary-fixture-body.md"
+  # HOME is overridden so the script's own DEFAULT_RETURN_PATH (derived from
+  # $HOME) resolves under this fixture, and --return-path is deliberately
+  # omitted so the write targets that real default, not a test-chosen path.
+  env -u FM_TASK_ID HOME="$primary" FM_HOME="$primary" FM_ROOT_OVERRIDE="$primary" \
+    FM_STATE_OVERRIDE="$primary/state" FM_CHATGPT_RETURN_NOW="$NOW" \
+    "$RETURN" write --status complete \
+    --return-file "$TMP_ROOT/primary-fixture-body.md" >/dev/null \
+    || fail "a genuine primary checkout could not write its own live default path"
+  assert_present "$dest" "the genuine primary's write did not land"
+  pass "a genuine non-worktree primary checkout may still write its own live default path"
+}
+
 test_verify_agrees_inline_and_rejects_four_vs_three() {
   local ok bad
   ok=$TMP_ROOT/ok.md
@@ -273,13 +330,36 @@ EOF
   pass "write refuses a return whose enumerated counts disagree"
 }
 
+# Diagnosed defect #4 (PR-count/list QA gap): a claimed count with a list of
+# title-only bullets naming no PR number must still be checked against the
+# bullet count, not waved through because collect_pr_ids found nothing.
+test_verify_rejects_title_only_bullets_undercounting_the_claim() {
+  local bad
+  bad=$TMP_ROOT/title-only.md
+  cat > "$bad" <<'EOF'
+Three PRs landed:
+
+- Fix the parser
+- Fix the renderer
+EOF
+  if "$RETURN" verify --file "$bad" > "$TMP_ROOT/title-only.out" 2> "$TMP_ROOT/title-only.err"; then
+    fail "a claim of three PRs with only two title-only bullets passed QA"
+  fi
+  assert_grep "claimed 3 PRs but listed 2 items" "$TMP_ROOT/title-only.err" \
+    "QA did not fall back to counting title-only bullets"
+  pass "verify counts title-only list bullets when no PR identity is present"
+}
+
 test_verify_agrees_inline_and_rejects_four_vs_three
 test_verify_cross_repo_same_number_not_conflated
 test_verify_bare_mentions_still_dedup_within_one_repo
+test_verify_rejects_title_only_bullets_undercounting_the_claim
 test_write_assembles_and_replaces
 test_interrupted_write_never_truncates_destination
 test_secondmate_refuses
 test_crewmate_live_path_refuses
 test_crewmate_equivalent_path_spellings_refuse
 test_crewmate_dangling_symlink_to_live_path_refuses
+test_worktree_root_refuses_live_path_even_without_task_id
+test_genuine_primary_root_may_write_live_path
 test_write_refuses_disagreeing_body

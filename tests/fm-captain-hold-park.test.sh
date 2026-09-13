@@ -195,8 +195,54 @@ test_fresh_park_publishes_no_resolved_event() {
   pass "a fresh park with no prior live hold publishes nothing to the parent channel"
 }
 
+# Codex review finding on PR #4344: when parking an existing live hold and the
+# parent-channel write itself fails, the backlog already transitioned to
+# hold_kind=parked. A naive re-check of `existing_hold_kind = captain` then
+# never fires again on retry (existing_hold_kind now reads "parked"), so the
+# parent's needs-decision would stay open forever with no way to complete it.
+# Force that failure by making the destination file unwritable, confirm the
+# resolved line is NOT published and a durable pending marker survives the
+# failed attempt, then restore write access and confirm a plain re-park
+# (still without --park having changed) completes the deferred publish and
+# clears the marker.
+test_park_retries_resolution_after_a_failed_publish() {
+  local parent mate channel
+  parent=$(make_home retry-parent)
+  mate=$(make_secondmate_home retry-mate "$parent")
+  channel="$parent/state/retry-mate.status"
+
+  run_captain "$mate" hold flaky-parent --title "Choose the flaky release" \
+    --reason "flaky release choice pending" --repo sample >/dev/null \
+    || fail "initial live hold failed"
+  assert_present "$channel" "the initial live hold did not create the parent channel file"
+
+  chmod 0444 "$channel" || fail "could not make the parent channel read-only for the test"
+  run_captain "$mate" hold flaky-parent --reason "now standing by" --park >/dev/null \
+    || fail "parking with a broken parent channel unexpectedly failed the whole command"
+  chmod 0644 "$channel" || fail "could not restore parent channel permissions"
+
+  assert_no_grep 'resolved [key=captain-hold-flaky-parent-1]' "$channel" \
+    "a failed parent-channel write was somehow still recorded as resolved"
+  assert_present "$mate/state/flaky-parent.park-pending-resolve" \
+    "a failed publish attempt did not leave a durable retry marker"
+
+  local hold_kind
+  hold_kind=$(show_field_in "$mate" flaky-parent hold_kind)
+  assert_equals parked "$hold_kind" \
+    "the backlog transition to parked must land even when the parent publish fails"
+
+  run_captain "$mate" hold flaky-parent --reason "still standing by" --park >/dev/null \
+    || fail "the retrying park call failed"
+  assert_grep 'resolved [key=captain-hold-flaky-parent-1]: captain hold flaky-parent: parked' \
+    "$channel" "retrying park after repairing the channel did not complete the deferred resolution"
+  assert_absent "$mate/state/flaky-parent.park-pending-resolve" \
+    "the retry marker survived a successful retry"
+  pass "a park whose parent-channel publish fails retries the resolution on a later park instead of losing it"
+}
+
 test_fresh_park_excluded_from_open_decisions
 test_ordinary_hold_still_surfaces
 test_unpark_restores_live_hold_and_removes_marker
 test_parking_a_live_hold_resolves_its_parent_decision
 test_fresh_park_publishes_no_resolved_event
+test_park_retries_resolution_after_a_failed_publish
